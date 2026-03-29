@@ -12,6 +12,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from yoto_api import AuthenticationError, YotoManager, YotoPlayerConfig
 
+from .cache import YotoLibraryCache
 from .const import CONF_TOKEN, DEFAULT_SCAN_INTERVAL, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -33,6 +34,8 @@ class YotoDataUpdateCoordinator(DataUpdateCoordinator):
         self.scan_interval: int = (
             config_entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL) * 60
         )
+        self._cache = YotoLibraryCache(hass, config_entry.entry_id)
+        self._cache_loaded = False
         super().__init__(
             hass,
             _LOGGER,
@@ -43,8 +46,21 @@ class YotoDataUpdateCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self) -> dict | None:
         """Update data via library. Called by update_coordinator periodically.
 
-        Allow to update for the first time without further checking
+        Allow to update for the first time without further checking.
+        On first startup, loads cache so entities have data immediately.
+        On network failure, falls back to cached library data.
         """
+
+        # On first run, load cache so entities have data before the API call
+        if not self._cache_loaded:
+            self._cache_loaded = True
+            cached_library = await self._cache.async_load()
+            if cached_library and len(self.yoto_manager.library.keys()) == 0:
+                self.yoto_manager.library.update(cached_library)
+                _LOGGER.debug(
+                    "Populated library from cache with %d cards",
+                    len(cached_library),
+                )
 
         try:
             await self.async_check_and_refresh_token()
@@ -61,13 +77,43 @@ class YotoDataUpdateCoordinator(DataUpdateCoordinator):
             _LOGGER.error(f"Authentication error: {ex}")
             raise ConfigEntryAuthFailed
 
-        await self.hass.async_add_executor_job(self.yoto_manager.update_players_status)
-        if len(self.yoto_manager.library.keys()) == 0:
-            await self.hass.async_add_executor_job(self.yoto_manager.update_library)
-        if self.yoto_manager.mqtt_client is None:
+        try:
             await self.hass.async_add_executor_job(
-                self.yoto_manager.connect_to_events, self.api_callback
+                self.yoto_manager.update_players_status
             )
+        except Exception as ex:
+            _LOGGER.warning("Failed to update player status: %s", ex)
+
+        try:
+            if len(self.yoto_manager.library.keys()) == 0:
+                await self.hass.async_add_executor_job(
+                    self.yoto_manager.update_library
+                )
+            # Save library to cache after successful fetch
+            if len(self.yoto_manager.library.keys()) > 0:
+                await self._cache.async_save(self.yoto_manager.library)
+        except Exception as ex:
+            _LOGGER.warning(
+                "Failed to update library from API, using cached data: %s", ex
+            )
+            # Fall back to cache if library is empty and API failed
+            if len(self.yoto_manager.library.keys()) == 0:
+                cached_library = await self._cache.async_load()
+                if cached_library:
+                    self.yoto_manager.library.update(cached_library)
+                    _LOGGER.info(
+                        "Fell back to cached library with %d cards",
+                        len(cached_library),
+                    )
+
+        if self.yoto_manager.mqtt_client is None:
+            try:
+                await self.hass.async_add_executor_job(
+                    self.yoto_manager.connect_to_events, self.api_callback
+                )
+            except Exception as ex:
+                _LOGGER.warning("Failed to connect to MQTT events: %s", ex)
+
         return self.data
 
     def api_callback(self) -> None:
@@ -226,12 +272,100 @@ class YotoDataUpdateCoordinator(DataUpdateCoordinator):
             self.yoto_manager.set_player_config, player_id, config
         )
 
-    async def async_update_card_detail(self, cardId: str) -> None:
-        """Get chapter and titles for the card"""
-        _LOGGER.debug(f"{DOMAIN} - Updating Card details for:  {cardId}")
+
+    async def async_reboot_player(self, player_id: str) -> None:
+        """Reboot the player."""
+        await self.async_check_and_refresh_token()
         await self.hass.async_add_executor_job(
-            self.yoto_manager.update_card_detail, cardId
+            self.yoto_manager.reboot_player, player_id
         )
+
+    async def async_bluetooth_on_speaker(self, player_id: str) -> None:
+        """Turn on Bluetooth speaker mode."""
+        await self.async_check_and_refresh_token()
+        await self.hass.async_add_executor_job(
+            self.yoto_manager.bluetooth_on_speaker, player_id
+        )
+
+    async def async_bluetooth_on_source(
+        self, player_id: str, name: str = None, mac: str = None
+    ) -> None:
+        """Turn on Bluetooth source mode."""
+        await self.async_check_and_refresh_token()
+        await self.hass.async_add_executor_job(
+            self.yoto_manager.bluetooth_on_source, player_id, name, mac
+        )
+
+    async def async_bluetooth_off(self, player_id: str) -> None:
+        """Turn off Bluetooth."""
+        await self.async_check_and_refresh_token()
+        await self.hass.async_add_executor_job(
+            self.yoto_manager.bluetooth_off, player_id
+        )
+
+    async def async_bluetooth_connect(self, player_id: str) -> None:
+        """Connect Bluetooth."""
+        await self.async_check_and_refresh_token()
+        await self.hass.async_add_executor_job(
+            self.yoto_manager.bluetooth_connect, player_id
+        )
+
+    async def async_bluetooth_disconnect(self, player_id: str) -> None:
+        """Disconnect Bluetooth."""
+        await self.async_check_and_refresh_token()
+        await self.hass.async_add_executor_job(
+            self.yoto_manager.bluetooth_disconnect, player_id
+        )
+
+    async def async_bluetooth_delete_bonds(self, player_id: str) -> None:
+        """Delete Bluetooth bonds."""
+        await self.async_check_and_refresh_token()
+        await self.hass.async_add_executor_job(
+            self.yoto_manager.bluetooth_delete_bonds, player_id
+        )
+
+    async def async_bluetooth_state(self, player_id: str) -> None:
+        """Request Bluetooth state."""
+        await self.async_check_and_refresh_token()
+        await self.hass.async_add_executor_job(
+            self.yoto_manager.bluetooth_state, player_id
+        )
+
+    async def async_display_preview(
+        self, player_id: str, uri: str, timeout: int = 10, animated: int = 0
+    ) -> None:
+        """Display preview on the player."""
+        await self.async_check_and_refresh_token()
+        await self.hass.async_add_executor_job(
+            self.yoto_manager.display_preview, player_id, uri, timeout, animated
+        )
+
+    async def async_update_card_detail(self, cardId: str) -> None:
+        """Get chapter and titles for the card."""
+        _LOGGER.debug(f"{DOMAIN} - Updating Card details for:  {cardId}")
+        try:
+            await self.hass.async_add_executor_job(
+                self.yoto_manager.update_card_detail, cardId
+            )
+            # Cache the updated card detail after successful fetch
+            if cardId in self.yoto_manager.library:
+                await self._cache.async_save_card_detail(
+                    cardId, self.yoto_manager.library[cardId]
+                )
+        except Exception as ex:
+            _LOGGER.warning(
+                "Failed to fetch card detail for %s from API: %s", cardId, ex
+            )
+            # Fall back to cached card detail
+            if cardId not in self.yoto_manager.library or not self.yoto_manager.library[
+                cardId
+            ].chapters:
+                cached_card = await self._cache.async_get_card(cardId)
+                if cached_card:
+                    self.yoto_manager.library[cardId] = cached_card
+                    _LOGGER.info(
+                        "Fell back to cached card detail for %s", cardId
+                    )
 
     async def async_update_library(self) -> None:
         """Update library details."""

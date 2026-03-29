@@ -30,6 +30,10 @@ SENSOR_DESCRIPTIONS: Final[tuple[SwitchEntityDescription, ...]] = (
         key="end_of_track_sleep",
         translation_key="end_of_track_sleep",
     ),
+    SwitchEntityDescription(
+        key="bluetooth_speaker_mode",
+        translation_key="bluetooth_speaker_mode",
+    ),
 )
 
 
@@ -91,6 +95,8 @@ class YotoSwitch(SwitchEntity, YotoEntity):
                 if abs(self.player.sleep_timer_seconds_remaining - seconds_to_end) <= 5:
                     return True
             return False
+        elif self._key == "bluetooth_speaker_mode":
+            return getattr(self.player, "bluetooth_audio_connected", False)
         elif self._key.startswith("alarms"):
             return getattr(self.player.config, self._attribute)[self._index].enabled
 
@@ -103,6 +109,8 @@ class YotoSwitch(SwitchEntity, YotoEntity):
             await self.coordinator.async_set_brightness(self.player.id, self._key, "0")
         elif self._key == "end_of_track_sleep":
             await self.coordinator.async_set_sleep_timer(self.player.id, 0)
+        elif self._key == "bluetooth_speaker_mode":
+            await self.coordinator.async_bluetooth_off(self.player.id)
         elif self._key.startswith("alarms"):
             await self.coordinator.async_enable_disable_alarm(
                 self.player.id, self._index, False
@@ -127,6 +135,8 @@ class YotoSwitch(SwitchEntity, YotoEntity):
                 await self.coordinator.async_set_sleep_timer(
                     self.player.id, seconds_to_end
                 )
+        elif self._key == "bluetooth_speaker_mode":
+            await self.coordinator.async_bluetooth_on_speaker(self.player.id)
         elif self._key.startswith("alarms"):
             await self.coordinator.async_enable_disable_alarm(
                 self.player.id, self._index, True

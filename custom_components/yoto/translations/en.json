@@ -46,6 +46,14 @@
     }
   },
   "entity": {
+    "button": {
+      "reboot": {
+        "name": "Reboot"
+      },
+      "bluetooth_delete_bonds": {
+        "name": "Bluetooth Delete Bonds"
+      }
+    },
     "binary_sensor": {
       "online": {
         "name": "Online"
@@ -101,6 +109,9 @@
       },
       "alarm": {
         "name": "Alarm {number}"
+      },
+      "bluetooth_speaker_mode": {
+        "name": "Bluetooth Speaker Mode"
       }
     },
     "number": {
